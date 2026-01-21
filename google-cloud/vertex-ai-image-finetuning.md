@@ -1,98 +1,163 @@
-Great! Based on your progress, here’s a comprehensive README to guide anyone through the process from creating an IAM user to fine-tuning a Gemini 2.5 Flash-Lite model on Vertex AI, tailored to your `ingredicheck-426912` project with a 38-row dataset and image processing. This assumes a fresh start and incorporates the lessons learned.
-
----
-
 # Fine-Tuning Gemini 2.5 Flash-Lite on Vertex AI for Ingredient Extraction
 
 This guide walks you through setting up an IAM user, preparing a Google Cloud project, uploading a dataset with images, and fine-tuning the Gemini 2.5 Flash-Lite model on Vertex AI to extract product information and flagged ingredients from images based on dietary preferences.
 
 ## Prerequisites
+
 - A Google account with access to Google Cloud.
 - Basic familiarity with the Google Cloud Console and storage concepts.
 - Local machine with a browser and text editor (e.g., VS Code).
 
 ## Step 1: Create an IAM User
-1. **Sign In to Google Cloud**:
-   - Go to [console.cloud.google.com](https://console.cloud.google.com) and sign in with your Google account.
-2. **Create a Project**:
-   - Click the project dropdown at the top and select **New Project**.
-   - Name it `ingredicheck-426912` (or your preferred name) and click **Create**.
-3. **Enable Billing**:
-   - Go to **Billing** in the sidebar, create a billing account, and link it to the project (required for Vertex AI).
-4. **Set Up IAM User**:
-   - Go to **IAM & Admin > IAM**.
-   - Click **Grant Access**, add your email, and assign roles:
-     - `roles/aiplatform.user` (for tuning jobs).
-     - `roles/storage.objectAdmin` (for bucket access).
-   - Click **Save**.
-5. **Initialize Google Cloud SDK** (Optional):
-   - Install the SDK from [cloud.google.com/sdk](https://cloud.google.com/sdk).
-   - Run `gcloud init`, select your project (`ingredicheck-426912`), and authenticate.
+
+1. **Sign In to Google Cloud**  
+   Go to https://console.cloud.google.com and sign in with your Google account.
+
+2. **Create a Project**  
+   Click the project dropdown → **New Project**  
+   Name it `ingredicheck-426912` (or your preferred name) → **Create**
+
+3. **Enable Billing**  
+   Go to **Billing** in the sidebar → create/link a billing account (required for Vertex AI).
+
+4. **Set Up IAM User**  
+   Go to **IAM & Admin > IAM**  
+   Click **Grant Access**, add your email, assign:  
+   - `roles/aiplatform.user`  
+   - `roles/storage.objectAdmin`  
+   Click **Save**
+
+5. **Initialize Google Cloud SDK** (optional but recommended)  
+   Install from https://cloud.google.com/sdk  
+   Run `gcloud init` → select project `ingredicheck-426912` → authenticate
 
 ## Step 2: Set Up Google Cloud Storage
-1. **Create a Bucket**:
-   - Navigate to **Cloud Storage > Buckets**.
-   - Click **Create Bucket**, name it `ingredicheck-finetune-426912` (unique, lowercase), and set:
-     - Location: `us-central1` (or `asia-south1` if preferred).
-     - Default storage class: `Standard`.
-   - Click **Create**.
-2. **Verify Access**:
-   - In the Console, ensure you can view the bucket. If using CLI, run `gsutil ls` (fix permissions if "Permission denied" occurs by running as Administrator).
+
+1. **Create a Bucket**  
+   Go to **Cloud Storage > Buckets > Create Bucket**  
+   Name: `ingredicheck-finetune-426912` (globally unique)  
+   Location: `us-central1` (recommended for Gemini tuning)  
+   Storage class: `Standard`  
+   Click **Create**
+
+2. **Verify Access**  
+   Make sure you can see the bucket in the console.  
+   (CLI check: `gsutil ls gs://ingredicheck-finetune-426912/` — run as Administrator if permission error occurs)
 
 ## Step 3: Prepare the Dataset
-1. **Create a JSONL File**:
-   - Use a text editor to create `extractor.vertex.jsonl` with examples like:
-     ```
-     {"systemInstruction": {"role": "system", "parts": [{"text": "Extract product info and flagged ingredients from images given dietary preferences for only food items. In product info, extract brand name and item only if it is visible in the image."}]},"contents": [{"role": "user", "parts": [{"text": "Dietary preferences: avoid sugar"}, {"fileData": {"mimeType": "image/jpeg", "fileUri": "gs://ingredicheck-finetune-426912/images/image1.jpg"}}]}, {"role": "model", "parts": [{"text": "Product info: {\"item\": \"Chocochip Cookies\", \"brand\": \"Unknown\", \"barcode\": \"8901719105913\", \"ingredients\": \"[{\\\"name\\\": \\\"No ingredient list available.\\\"}]\", \"matchStatus\": \"unmatched\", \"extraction_latency\": \"2498.000000\"}\nFlagged ingredients: [{\"name\": \"sugar\"}, {\"name\": \"dextrose\"}, {\"name\": \"invert sugar syrup\"}]"}]}]}
-     ```
-   - Ensure 38 rows, each with consistent `systemInstruction` and `contents` structure.
-2. **Prepare Images**:
-   - Collect images (e.g., `image1.jpg`) matching the `fileUri` values.
-   - Create a local `images` folder and place the files there.
-3. **Upload Dataset and Images**:
-   - In **Cloud Storage > Buckets > ingredicheck-finetune-426912**, click **Upload Files** to upload `extractor.vertex.jsonl`.
-   - Click **Upload Folder**, select the `images` folder, and upload (files go to `gs://ingredicheck-finetune-426912/images/`).
-   - Verify paths (e.g., `gs://ingredicheck-finetune-426912/images/image1.jpg`).
+
+### Option A – Single training file (most common for small experiments)
+
+1. Create `extractor.vertex.jsonl` with the correct Gemini tuning format:  
+   ```json
+   {"messages": [
+     {"role": "user",   "content": "prompt text or multimodal content"},
+     {"role": "model",  "content": "expected completion"}
+   ]}
+   ```
+
+   or (newer multimodal style)
+
+   ```json
+   {"contents": [
+     {"role": "user",   "parts": [{"text": "..."}, {"fileData": {...}}]},
+     {"role": "model",  "parts": [{"text": "..."}]}
+   ]}
+   ```
+
+2. Collect images and upload them to `gs://ingredicheck-finetune-426912/images/`
+
+3. Update `fileUri` in the JSONL to point to Cloud Storage:  
+   `"fileUri": "gs://ingredicheck-finetune-426912/images/image1.jpg"`
+
+4. Upload the JSONL file to the bucket root (or any path you like).
+
+→ Vertex AI will automatically create an internal validation split (~10–20%).
+
+### Option B – You already have separate train and validation sets (recommended when you want to control evaluation)
+
+1. Prepare two JSONL files with **exactly the same format**:
+
+   - `train.jsonl` → only training examples  
+   - `valid.jsonl` or `val.jsonl` → validation / hold-out examples
+
+   Example structure (both files must use this format):
+
+   ```json
+   {"messages": [
+     {"role": "user",   "parts": [{"text": "Dietary preferences: avoid sugar"}, {"fileData": {"mimeType": "image/jpeg", "fileUri": "gs://.../images/image1.jpg"}}]},
+     {"role": "model",  "parts": [{"text": "Product info: ... \nFlagged ingredients: [...]"}]}
+   ]}
+   ```
+
+2. Upload both files to the bucket:
+
+   ```
+   gs://ingredicheck-finetune-426912/train.jsonl
+   gs://ingredicheck-finetune-426912/valid.jsonl
+   ```
+
+   (You can also put them in subfolders if you prefer, e.g. `data/train.jsonl`)
+
+3. **Important**: Make sure image `fileUri` paths in both files point to the correct location in your bucket (usually `gs://ingredicheck-finetune-426912/images/...`).
+
+→ When you create the tuning job, you will point Vertex AI to **both** files.
 
 ## Step 4: Fine-Tune the Model on Vertex AI
-1. **Navigate to Tuning**:
-   - Go to **Vertex AI > Training > Tuning** in the Console.
-2. **Create a Tuning Job**:
-   - Click **Create**.
-   - **Model**: Select `gemini-2.5-flash-lite` (ensure available in `us-central1`).
-   - **Dataset**:
-     - **Training Data**: Browse to `gs://ingredicheck-finetune-426912/extractor.vertex.jsonl`.
-     - **Validation Data**: Leave blank.
-   - **Tuned Model Name**: Enter `ingredicheck-38-tuned-2.5-flash-lite-v1`.
-   - **Hyperparameters**:
-     - **Epochs**: Set to 2 (optimal for 38 rows to avoid overfitting).
-     - **Adapter Size**: Select `SMALL`.
-     - **Region**: `us-central1`.
-   - Click **Start Training**.
-3. **Monitor the Job**:
-   - Go to **Tuning Jobs**, select the job, and refresh every 5–10 minutes.
-   - Expect 20–60 minutes; check **Logs** if it fails.
+
+1. Go to **Vertex AI > Training > Tuning**
+
+2. Click **Create**
+
+3. **Model**: Select `gemini-2.5-flash-lite` (or latest stable version)
+
+4. **Dataset**:
+
+   - **Training dataset** → browse or paste  
+     `gs://ingredicheck-finetune-426912/train.jsonl`  
+     (or `extractor.vertex.jsonl` if using single file)
+
+   - **Validation dataset** → browse or paste  
+     `gs://ingredicheck-finetune-426912/valid.jsonl`  
+     (skip if using single file)
+
+5. **Tuned model display name**: `ingredicheck-38-tuned-2.5-flash-lite-v1`
+
+6. **Hyperparameters**:
+   - Epochs: 2–3 (start with 2 for small dataset)
+   - Adapter size: `SMALL`
+   - Region: `us-central1`
+
+7. Click **Start Training**
+
+8. **Monitor**:
+   - Go to **Tuning Jobs**
+   - Refresh every 5–10 min
+   - Expected time: 20–90 min (longer with images)
 
 ## Step 5: Deploy and Test the Tuned Model
-1. **Create an Endpoint**:
-   - Once the job status is **SUCCEEDED**, go to **Vertex AI > Online Prediction > Endpoints**.
-   - Click **Create Endpoint**, select the tuned model, set a name (e.g., `ingredicheck-endpoint-20251013`), and deploy (5–10 minutes).
-2. **Test the Model**:
-   - Select the endpoint, click **Test**, and input: `{"contents": [{"role": "user", "parts": [{"text": "Dietary preferences: avoid sugar"}, {"fileData": {"mimeType": "image/jpeg", "fileUri": "gs://ingredicheck-finetune-426912/images/image1.jpg"}}]}]}`.
-   - Review the response for product info and flagged ingredients.
 
-## Step 6: Clean Up (Optional)
-- Delete the endpoint (**Endpoints > Delete**) and tuned model (**Vertex AI > Models > Delete**) if no longer needed.
-- Remove files from the bucket (**Cloud Storage > Delete**) to manage costs.
+1. When status = **SUCCEEDED**:
+   - Go to **Vertex AI > Models**
+   - Find your tuned model → **Deploy & Test** or **Deploy to endpoint**
+
+2. Create endpoint:
+   - Name: `ingredicheck-endpoint-v1`
+   - Machine type: `n1-standard-2` (cheapest)
+   - Deploy
+
+3. Test in console:
+   - Go to the endpoint → **Test tab**
+   - Send sample request with text + image URI
+
+## Step 6: Clean Up (to avoid charges)
+
+- **Delete endpoint** when not using → **Endpoints > Delete**
+- **Delete tuned model** (optional) → **Models > Delete**
+- **Delete bucket contents** if finished → **Cloud Storage > Delete**
 
 ## Troubleshooting
-- **Failed Job**: Check **Logs** for errors (e.g., "Inaccessible URL" or "Invalid dataset") and adjust the JSONL or permissions.
-- **CLI Issues**: Run Command Prompt as Administrator and retry `gsutil` commands, or reinstall the SDK.
 
-## Notes
-- Costs are minimal (~$1–$5 for small jobs); monitor via **Billing > Reports**.
-- For advanced tuning, adjust epochs (1–3) based on performance.
-
----
-
-This README covers your journey from IAM setup to fine-tuning. Start the job with 2 epochs, and let me know if you need help with any step!
+- Job fails with “inaccessible URL” → make sure all `fileUri` are valid `gs://` paths
+- “Invalid dataset format” → check JSONL is correctly formatted (use single-line JSON objects)
+- Very long training time → reduce epochs to 1–2 or remove some images
